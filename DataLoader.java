@@ -9,7 +9,7 @@ public class DataLoader {
      * Loads session data from file into the given store.
      * Format expected: session:userXXX → {"userId": "...", ...}
      */
-    public static int loadSessions(String filePath, ConcurrentHashMap<String, String> store) {
+    public static int loadSessions(String filePath, ConcurrentHashMap<String, VersionedValue> store) {
         int count = 0;
         try (BufferedReader br = new BufferedReader(new FileReader(filePath))) {
             String line;
@@ -26,7 +26,8 @@ public class DataLoader {
                 String key = parts[0].trim();   // session:user001
                 String value = parts[1].trim(); // JSON string
 
-                store.put(key, value);
+                // Initialize with version 1
+                store.put(key, new VersionedValue(value, 1));
                 count++;
             }
             System.out.println("Successfully loaded " + count + " sessions from " + filePath);
@@ -38,14 +39,14 @@ public class DataLoader {
 
     // Quick standalone test
     public static void main(String[] args) {
-        ConcurrentHashMap<String, String> testStore = new ConcurrentHashMap<>();
+        ConcurrentHashMap<String, VersionedValue> testStore = new ConcurrentHashMap<>();
         int loaded = loadSessions("user_sessions.txt", testStore);
 
         if (loaded > 0) {
             System.out.println("\nFirst few entries for verification:");
             testStore.forEach((k, v) -> {
                 if (k.compareTo("session:user020") < 0) {  // show only first ~19
-                    System.out.println(k + " → " + v);
+                    System.out.println(k + " → " + v.value + " (v" + v.version + ")");
                 }
             });
         }
