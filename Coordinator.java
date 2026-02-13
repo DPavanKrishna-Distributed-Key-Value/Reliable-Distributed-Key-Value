@@ -1,3 +1,36 @@
+/*
+ * ==============================================================================================
+ *                                  SYSTEM ARCHITECTURE & DESIGN
+ * ==============================================================================================
+ * 
+ * 1. ARCHITECTURE
+ *    - Centralized Static Coordinator (Port 8080)
+ *    - Distributed Storage Nodes (Ports 8081, 8082, 8083)
+ *    - Shared-Nothing Architecture: Nodes do not communicate directly with each other.
+ * 
+ * 2. REPLICATION MODEL
+ *    - Primary-Backup / Leader-Follower hybrid.
+ *    - Coordinator acts as the entry point and replication manager.
+ *    - Data is replicated to ALL available nodes to ensure maximum durability.
+ * 
+ * 3. QUORUM CONSISTENCY (Dynamic)
+ *    - Protocol: Read-Your-Writes / Strong Consistency via Quorums.
+ *    - Quorum Formula: Q = (AliveNodes / 2) + 1
+ *    - Minimum Quorum: 2 (if 3 nodes alive), adjusts to 2 if 2 alive.
+ *    - Write Success: Requires Q acknowledgments.
+ *    - Read Success: Requires Q responses, resolving conflicts via Versioning.
+ * 
+ * 4. FAILURE DETECTION
+ *    - Heartbeat Mechanism: Coordinator pings nodes every 2 seconds.
+ *    - Timeout: Nodes silent for >5 seconds are marked FAILED.
+ *    - Excluded from Quorum calculations immediately upon detection.
+ * 
+ * 5. RECOVERY PROCESS
+ *    - Automatic Re-synchronization on Heartbeat recovery.
+ *    - Coordinator pushes missing keys (latest versions) to the recovered node.
+ * ==============================================================================================
+ */
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -10,6 +43,7 @@ import java.util.Map;
 import java.util.HashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class Coordinator {
     private final int port;
@@ -17,6 +51,12 @@ public class Coordinator {
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final Map<String, Integer> keyVersions = new HashMap<>(); // Track versions for keys
     private HeartbeatManager heartbeatManager;
+
+    // UPGRADE 2: Metrics
+    private final AtomicInteger totalWrites = new AtomicInteger(0);
+    private final AtomicInteger totalReads = new AtomicInteger(0);
+    private final AtomicInteger failedWrites = new AtomicInteger(0);
+    public final AtomicInteger nodeFailuresDetected = new AtomicInteger(0); // Public for HeartbeatManager to increment
 
     // Hardcoded node configuration for academic simplicity
     public Coordinator(int port) {
@@ -68,26 +108,46 @@ public class Coordinator {
         String[] parts = command.split(":");
         String type = parts[0];
 
-        if (type.equals("PUT")) {
-            // PUT:key:value
-            if (parts.length < 3)
-                return "ERROR:InvalidPUTFormat";
-            String key = parts[1];
-            String value = parts[2];
-            return handlePut(key, value);
-        } else if (type.equals("GET")) {
-            // GET:key
-            if (parts.length < 2)
-                return "ERROR:InvalidGETFormat";
-            String key = parts[1];
-            return handleGet(key);
-        } else {
-            return "ERROR:UnknownCommand";
+        switch (type) {
+            case "PUT":
+                // PUT:key:value
+                if (parts.length < 3)
+                    return "ERROR:InvalidPUTFormat";
+                String key = parts[1];
+                String value = parts[2];
+                return handlePut(key, value);
+            case "GET":
+                // GET:key
+                if (parts.length < 2)
+                    return "ERROR:InvalidGETFormat";
+                return handleGet(parts[1]);
+            case "STATS":
+                // UPGRADE 2: Metrics Dashboard
+                return getSystemMetrics();
+            default:
+                return "ERROR:UnknownCommand";
         }
     }
 
-    // PHASE 3 & 4: Write Logic (Quorum W=2)
+    // UPGRADE 1: Dynamic Quorum Calculation
+    private int getDynamicQuorum(int aliveNodeCount) {
+        // Formula: (Alive / 2) + 1
+        return (aliveNodeCount / 2) + 1;
+    }
+
+    private int countAliveNodes() {
+        int count = 0;
+        for (NodeInfo node : nodes) {
+            if (node.isAlive)
+                count++;
+        }
+        return count;
+    }
+
+    // UPGRADE 1 & 2: Write Logic (Dynamic Quorum + Metrics)
     private String handlePut(String key, String value) {
+        totalWrites.incrementAndGet();
+
         // Increment version
         int newVersion = keyVersions.getOrDefault(key, 0) + 1;
         keyVersions.put(key, newVersion);
@@ -108,20 +168,26 @@ public class Coordinator {
             }
         }
 
-        System.out.println("[Coordinator] Active Nodes: " + activeNodes + ", ACKs: " + acks);
+        int quorum = getDynamicQuorum(activeNodes);
+        System.out.println("[Coordinator] Alive Nodes: " + activeNodes);
+        System.out.println("[Coordinator] Dynamic Write Quorum: " + quorum);
 
-        // Check Quorum (W=2)
-        if (acks >= 2) {
-            System.out.println("[Coordinator] Write Quorum Achieved (" + acks + "/3) for " + key);
+        // Check Quorum
+        if (acks >= quorum) {
+            System.out.println("[Coordinator] Write Quorum Achieved (" + acks + "/" + activeNodes + ") for " + key);
             return "SUCCESS:WriteQuorumMet";
         } else {
-            System.out.println("[Coordinator] Write FAILED - Quorum Not Met (" + acks + "/3) for " + key);
+            failedWrites.incrementAndGet();
+            System.out.println(
+                    "[Coordinator] Write FAILED - Quorum Not Met (" + acks + "/" + activeNodes + ") for " + key);
             return "FAILURE:WriteQuorumNotMet";
         }
     }
 
-    // PHASE 5: Read Logic (Quorum R=2)
+    // UPGRADE 1 & 2: Read Logic (Dynamic Quorum + Metrics)
     private String handleGet(String key) {
+        totalReads.incrementAndGet();
+
         String command = "GET:" + key;
         List<VersionedValue> readings = new ArrayList<>();
         int activeNodes = 0;
@@ -146,10 +212,12 @@ public class Coordinator {
             }
         }
 
-        System.out.println("[Coordinator] Read responses received from " + readings.size() + " nodes (Active: "
-                + activeNodes + ")");
+        int quorum = getDynamicQuorum(activeNodes);
+        System.out.println("[Coordinator] Alive Nodes: " + activeNodes);
+        System.out.println("[Coordinator] Dynamic Read Quorum: " + quorum);
+        System.out.println("[Coordinator] Read responses received from " + readings.size() + " nodes");
 
-        if (readings.size() < 2) {
+        if (readings.size() < quorum) {
             return "FAILURE:ReadQuorumNotMet";
         }
 
@@ -167,6 +235,17 @@ public class Coordinator {
         } else {
             return "NULL";
         }
+    }
+
+    // UPGRADE 2: Metrics Dashboard
+    private String getSystemMetrics() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("----- SYSTEM METRICS -----\n");
+        sb.append("Total Writes: ").append(totalWrites.get()).append("\n");
+        sb.append("Total Reads: ").append(totalReads.get()).append("\n");
+        sb.append("Failed Writes: ").append(failedWrites.get()).append("\n");
+        sb.append("Node Failures Detected: ").append(nodeFailuresDetected.get());
+        return sb.toString();
     }
 
     // PHASE 8: Automatic Re-Synchronization

@@ -35,6 +35,7 @@ public class HeartbeatManager {
                 // Node just failed
                 node.isAlive = false;
                 node.lastSeen = System.currentTimeMillis(); // Log failure time?
+                coordinator.nodeFailuresDetected.incrementAndGet(); // UPGRADE 2
                 System.out.println("[HeartbeatManager] ALERT: Node " + node.id + " FAILED (Heartbeat timeout)");
             } else if (!previousStatus && currentStatus) {
                 // Node just recovered

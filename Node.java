@@ -1,4 +1,7 @@
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
@@ -11,6 +14,7 @@ import java.util.concurrent.Executors;
 public class Node {
     private final String nodeId;
     private final int port;
+    private final String storageFile; // UPGRADE 3: Persistence file
     // PHASE 1 & 2: Use VersionedValue
     private final ConcurrentHashMap<String, VersionedValue> store = new ConcurrentHashMap<>();
     private volatile boolean isAlive = true;
@@ -20,13 +24,65 @@ public class Node {
     public Node(String nodeId, int port) {
         this.nodeId = nodeId;
         this.port = port;
+        this.storageFile = "storage_" + nodeId + ".txt"; // UPGRADE 3
         System.out.println("Node created: " + nodeId + " on port " + port);
 
-        // Load initial data
-        DataLoader.loadSessions("user_sessions.txt", store);
+        // UPGRADE 3: Restore data from disk
+        loadFromDisk();
+
+        // Load initial data (if needed, or maybe removed if purely relying on
+        // sync/persistence)
+        // DataLoader.loadSessions("user_sessions.txt", store);
+        // NOTE: Keeping DataLoader for initial seeding if empty, but persistence is
+        // primary.
+        if (store.isEmpty()) {
+            DataLoader.loadSessions("user_sessions.txt", store);
+        }
 
         // Start server thread
         startServer();
+    }
+
+    // UPGRADE 3: Persistence - Restore
+    private void loadFromDisk() {
+        System.out.println("[" + nodeId + "] Loading data from " + storageFile + "...");
+        int count = 0;
+        try (BufferedReader br = new BufferedReader(new FileReader(storageFile))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                // Format: key:value:version
+                // Be careful with splitting if value contains colons.
+                // Protocol assumes PUT:key:val:ver. Here we store key:val:ver.
+                // Simpler parsing for academic purposes: assume keys/values don't break format
+                // easily or use last index for version.
+
+                int firstColon = line.indexOf(':');
+                int lastColon = line.lastIndexOf(':');
+
+                if (firstColon == -1 || lastColon == -1 || firstColon == lastColon)
+                    continue;
+
+                String key = line.substring(0, firstColon);
+                String value = line.substring(firstColon + 1, lastColon);
+                int version = Integer.parseInt(line.substring(lastColon + 1));
+
+                store.put(key, new VersionedValue(value, version));
+                count++;
+            }
+            System.out.println("[" + nodeId + "] Restored " + count + " records from disk.");
+        } catch (IOException e) {
+            System.out.println("[" + nodeId + "] No existing storage found or error reading: " + e.getMessage());
+        }
+    }
+
+    // UPGRADE 3: Persistence - Append
+    private synchronized void saveToDisk(String key, String value, int version) {
+        try (BufferedWriter bw = new BufferedWriter(new FileWriter(storageFile, true))) {
+            bw.write(key + ":" + value + ":" + version);
+            bw.newLine();
+        } catch (IOException e) {
+            System.err.println("[" + nodeId + "] Disk Write Error: " + e.getMessage());
+        }
     }
 
     private void startServer() {
@@ -143,6 +199,8 @@ public class Node {
         store.compute(key, (k, existing) -> {
             if (existing == null || version > existing.version) {
                 System.out.println("[" + nodeId + "] PUT " + key + " v" + version + " (Updated)");
+                // UPGRADE 3: Save to disk
+                saveToDisk(key, value, version);
                 return new VersionedValue(value, version);
             } else {
                 System.out.println("[" + nodeId + "] PUT " + key + " v" + version + " (Ignored, current: v"

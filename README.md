@@ -18,9 +18,32 @@ Crash (fail-stop) fault tolerance
 
 Multithreading and concurrency control
 
-A session-based dataset (e.g., session:user003 → {"userId":"user003","loginTime":"19:16","status":"active"}) is used to simulate real-world distributed storage scenarios like session management systems.
-
 Overall, this project models the foundational principles used in real-world distributed databases such as Dynamo and Cassandra, providing a practical implementation of consistency and fault tolerance mechanisms in distributed environments.
+
+## 🌟 New Advanced Features (Upgrades)
+
+### 1. Dynamic Quorum Recalculation
+The system now automatically adjusts the Quorum requirement based on the number of alive nodes.
+- **Formula**: `(AliveNodes / 2) + 1`
+- If 3 nodes are alive, Quorum = 2.
+- If only 2 nodes are alive, Quorum = 2.
+- This ensures the system remains available and consistent even as nodes fail.
+
+### 2. Live Metrics Dashboard
+The Coordinator tracks real-time statistics. Send the `STATS` command to view:
+- Total Writes
+- Total Reads
+- Failed Writes
+- Node Failures Detected
+
+### 3. Disk Persistence
+Nodes now persist data to disk (`storage_NodeA.txt`, etc.).
+- Data is saved immediately on `PUT`.
+- Data is restored automatically when a node restarts.
+- This guarantees data durability across crashes.
+
+### 4. Architecture Documentation
+The `Coordinator.java` file now includes a detailed academic explanation of the system architecture, replication model, and recovery processes.
 
 
 
